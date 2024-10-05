@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkPaned" id="body">
+    <property name="orientation">horizontal</property>
+    <property name="position">700</property>
+
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">horizontal</property>
+
+            <child>
+              <object class="GtkEntry" id="room-name"></object>
+            </child>
+
+            <child>
+              <object class="GtkButton" id="add-room">
+                <property name="label">Add Room</property>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkTreeView" id="rooms">
+            <property name="headers-visible">True</property>
+
+            <child>
+              <!-- First Column -->
+              <object class="GtkTreeViewColumn">
+                <property name="title">Room Name</property>
+
+                <child>
+                  <object class="GtkCellRendererText" id="renderer1"/>
+                  <attributes>
+                    <attribute name="text">0</attribute> 
+                  </attributes>
+                </child>
+
+              </object>
+            </child>
+
+          </object>
+        </child>
+
+      </object>
+    </child>
+
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+
+        <child>
+          <object class="GtkSeparator">
+          </object>
+
+          <packing>
+            <property name="padding">5</property>
+          </packing>
+        </child>
+
+        <child>
+          <object class="GtkDrawingArea" id="draw">
+          </object>
+
+          <packing>
+            <property name="expand">true</property>
+          </packing>
+        </child>
+
+      </object>
+    </child>
+
+  </object>
+</interface>
+ 
