@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
@@ -22,13 +24,16 @@ import (
 )
 
 type Peer struct {
-	name      string
-	node      host.Host
-	ctx       context.Context
-	ps        *pubsub.PubSub
-	roomTopic *pubsub.Topic
-	topics    map[string]*pubsub.Topic
-	rooms     map[string]*room
+	name        string
+	node        host.Host
+	ctx         context.Context
+	ps          *pubsub.PubSub
+	roomSub     *pubsub.Subscription
+	roomTopic   *pubsub.Topic
+	currentRoom string
+	roomLock    sync.Mutex
+
+	rooms map[string]*room
 }
 
 const roomTopic = "rooms"
@@ -58,13 +63,25 @@ func main() {
 		name = fmt.Sprintf("%s-%s", os.Getenv("USER"), peer)
 	}
 
+	topic, err := ps.Join(roomTopic)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sub, err := topic.Subscribe()
+	if err != nil {
+		log.Fatal()
+	}
+
 	host := Peer{
-		name:   name,
-		node:   node,
-		ctx:    ctx,
-		ps:     ps,
-		topics: make(map[string]*pubsub.Topic, 128),
-		rooms:  make(map[string]*room, 128),
+		name:      name,
+		node:      node,
+		ctx:       ctx,
+		ps:        ps,
+		roomSub:   sub,
+		roomTopic: topic,
+
+		rooms: make(map[string]*room, 128),
 	}
 
 	s := mdns.NewMdnsService(node, "chalkboard", &host)
@@ -84,7 +101,7 @@ func main() {
 		gtk.MainQuit()
 	})
 
-	initWindow(win, host)
+	initWindow(win, &host)
 
 	win.SetDecorated(true)
 	win.ShowAll()
@@ -105,7 +122,7 @@ type point struct {
 	Y float64
 }
 
-func initWindow(win *gtk.Window, host Peer) {
+func initWindow(win *gtk.Window, host *Peer) {
 	builder, err := gtk.BuilderNewFromFile("./gui.ui")
 	if err != nil {
 		log.Fatal(err)
@@ -114,11 +131,25 @@ func initWindow(win *gtk.Window, host Peer) {
 	box, err := utils.BuilderGetObject[*gtk.Paned](builder, "body")
 	win.Add(box)
 
-	var room *room
-	var l line
+	var currentLine line
 	buttonPressed := false
 
 	roomView, err := utils.BuilderGetObject[*gtk.TreeView](builder, "rooms")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	roomName, err := utils.BuilderGetObject[*gtk.Entry](builder, "room-name")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	addRoomButton, err := utils.BuilderGetObject[*gtk.Button](builder, "add-room")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	drawArea, err := utils.BuilderGetObject[*gtk.DrawingArea](builder, "draw")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -143,12 +174,7 @@ func initWindow(win *gtk.Window, host Peer) {
 				return
 			}
 
-			if _, ok := host.rooms[name]; ok {
-				room = host.rooms[name]
-				return
-			}
-
-			room, err = joinRoom(host, name)
+			err = host.joinRoom(name)
 			if err != nil {
 				log.Printf("Error joining room: %s", err)
 				return
@@ -157,16 +183,6 @@ func initWindow(win *gtk.Window, host Peer) {
 			log.Printf("Joined %s", name)
 		})
 
-	roomName, err := utils.BuilderGetObject[*gtk.Entry](builder, "room-name")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	addRoomButton, err := utils.BuilderGetObject[*gtk.Button](builder, "add-room")
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	addRoomButton.Connect("clicked", func() {
 		name, err := roomName.GetText()
 		if err != nil {
@@ -174,61 +190,32 @@ func initWindow(win *gtk.Window, host Peer) {
 			return
 		}
 
-		// create topic for room
-		topic, err := host.ps.Join(name)
-		if err != nil {
-			log.Printf("Error adding room: %s", err)
-			return
-		}
-
-		host.topics[name] = topic
-
 		iter := roomModel.Append()
 		roomModel.SetValue(iter, 0, name)
+		drawArea.QueueDraw()
 	})
-
-	drawArea, err := utils.BuilderGetObject[*gtk.DrawingArea](builder, "draw")
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	// messages from other users
 	drawArea.AddEvents(gdk.BUTTON1_MASK)
 	drawArea.AddEvents(int(gdk.POINTER_MOTION_MASK))
 
 	go func() {
-		// receive new line
 		for {
-			if room == nil {
-				continue
-			}
-
-			m := <-room.Messages
-			room.lineLock.Lock()
-
-			if _, ok := room.lines[m.SenderID]; !ok {
-				room.lines[m.SenderID] = make(map[int]line, 1024)
-			}
-
-			room.lines[m.SenderID][m.LineIndex] = m.Line
-			room.lineCount = max(m.LineIndex, room.lineCount)
-
-			room.lineLock.Unlock()
+			time.Sleep(50 * time.Millisecond)
 			drawArea.QueueDraw()
 		}
 	}()
 
 	drawArea.Connect("draw", func(d *gtk.DrawingArea, cr *cairo.Context) {
+		room := host.getCurrentRoom()
 		if room == nil {
 			return
 		}
 
 		room.lineLock.Lock()
 
-		for _, lines := range room.lines {
-			for _, line := range lines {
-				line.draw(cr)
-			}
+		for _, line := range room.lines {
+			line.draw(cr)
 		}
 
 		room.lineLock.Unlock()
@@ -242,13 +229,14 @@ func initWindow(win *gtk.Window, host Peer) {
 			return
 		}
 
+		room := host.getCurrentRoom()
 		if room == nil {
 			return
 		}
 
 		if !buttonPressed {
-			l = line{
-				Index:  l.Index + 1,
+			currentLine = line{
+				Index:  currentLine.Index + 1,
 				Red:    0,
 				Green:  0,
 				Blue:   0,
@@ -263,8 +251,8 @@ func initWindow(win *gtk.Window, host Peer) {
 			Y: b.Y(),
 		}
 
-		l.Points = append(l.Points, p)
-		room.publish(l, l.Index)
+		currentLine.Points = append(currentLine.Points, p)
+		host.publish(currentLine, currentLine.Index)
 		drawArea.QueueDraw()
 	})
 }
@@ -295,51 +283,81 @@ type message struct {
 
 type room struct {
 	Messages chan *message
-	host     Peer
+	active   chan bool
+	host     *Peer
 	topic    *pubsub.Topic
-	sub      *pubsub.Subscription
 
-	roomName  string
-	lines     map[string]map[int]line
-	lineLock  sync.Mutex
-	lineCount int
+	roomName string
+	lineLock sync.Mutex
+	lines    map[string]line
 }
 
-func joinRoom(host Peer, roomName string) (*room, error) {
-	topic, ok := host.topics[roomName]
-	if !ok {
-		err := fmt.Errorf("Missing topic %s", roomName)
-		return nil, err
-	}
-
-	sub, err := topic.Subscribe()
+func newRoom(host *Peer, name string) (*room, error) {
+	topic, err := host.ps.Join(name)
 	if err != nil {
 		return nil, err
 	}
 
 	r := &room{
-		host:      host,
-		topic:     topic,
-		sub:       sub,
-		roomName:  roomName,
-		lineCount: 0,
-
-		lines:    make(map[string]map[int]line, 128),
 		Messages: make(chan *message, 10),
+		active:   make(chan bool, 10),
+		host:     host,
+		topic:    topic,
+
+		roomName: name,
+		lines:    make(map[string]line),
 	}
 
 	go r.readLoop()
-	host.rooms[roomName] = r
 	return r, nil
 }
 
-func (r *room) publish(l line, lineIndex int) error {
-	peerID := r.host.node.ID()
+func (r *room) put(host string, l line) {
+	name := host + "-" + strconv.Itoa(l.Index)
+
+	r.lineLock.Lock()
+	r.lines[name] = l
+	r.lineLock.Unlock()
+}
+
+func (host *Peer) joinRoom(roomName string) error {
+	if _, ok := host.rooms[host.currentRoom]; ok {
+		//room.active <- false
+	}
+
+	host.roomLock.Lock()
+	if _, ok := host.rooms[roomName]; !ok {
+		room, err := newRoom(host, roomName)
+		if err != nil {
+			host.roomLock.Unlock()
+			return err
+		}
+
+		host.rooms[roomName] = room
+	}
+
+	host.currentRoom = roomName
+	host.roomLock.Unlock()
+
+	//host.rooms[host.currentRoom].active <- true
+	return nil
+}
+
+func (host *Peer) getCurrentRoom() *room {
+	host.roomLock.Lock()
+	room := host.rooms[host.currentRoom]
+	host.roomLock.Unlock()
+
+	return room
+}
+
+func (host *Peer) publish(l line, lineIndex int) error {
+	peerID := host.node.ID()
 	msg := message{
 		Line:       l,
 		LineIndex:  lineIndex,
 		SenderID:   peerID.String(),
-		SenderName: r.host.name,
+		SenderName: host.name,
 	}
 
 	msgBytes, err := json.Marshal(msg)
@@ -347,15 +365,61 @@ func (r *room) publish(l line, lineIndex int) error {
 		return err
 	}
 
-	return r.topic.Publish(r.host.ctx, msgBytes)
+	room := host.getCurrentRoom()
+	if room == nil {
+		return nil
+	}
+
+	room.put(host.name, l)
+	return room.topic.Publish(host.ctx, msgBytes)
 }
 
 func (r *room) readLoop() {
+	var (
+	// active bool
+	// err    error
+	)
+
+	sub, err := r.topic.Subscribe()
+	if err != nil {
+		log.Print("Error activating subscription:", err)
+	}
 	for {
-		msg, err := r.sub.Next(r.host.ctx)
+		/*
+			// update sub state
+			if active && sub == nil {
+				sub, err = r.topic.Subscribe()
+				if err != nil {
+					log.Print("Error activating subscription:", err)
+				}
+			} else if !active && sub != nil {
+				sub.Cancel()
+				sub = nil
+			}
+
+			// check for close or open subscription
+			if active {
+				select {
+				case newState := <-r.active:
+					active = newState
+					continue
+				default:
+				}
+			} else {
+				active = <-r.active
+				continue
+			}
+		*/
+
+		msg, err := sub.Next(r.host.ctx)
 		if err != nil {
-			close(r.Messages)
-			return
+			sub = nil
+			log.Println("Error getting the next message", err)
+			continue
+		}
+
+		if msg.ReceivedFrom == r.host.node.ID() {
+			continue
 		}
 
 		cm := new(message)
@@ -364,8 +428,7 @@ func (r *room) readLoop() {
 			continue
 		}
 
-		// send valid messages onto the Messages channel
-		r.Messages <- cm
+		r.put(cm.SenderName, cm.Line)
 	}
 }
 
