@@ -21,6 +21,13 @@
                 <property name="label">Add Room</property>
               </object>
             </child>
+
+            <child>
+              <object class="GtkButton" id="refresh-room">
+                <property name="label">Refresh</property>
+              </object>
+            </child>
+
           </object>
         </child>
 

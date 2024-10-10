@@ -1,14 +1,14 @@
 package main
 
 import (
-	"chalkboard/utils"
+	"chalkboard/canvas"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
+	"reflect"
 	"sync"
 	"time"
 
@@ -23,20 +23,23 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
 
+type Room struct {
+	Owner string
+	Rooms []string
+	iters map[string]*gtk.TreeIter
+}
+
 type Peer struct {
 	name        string
 	node        host.Host
 	ctx         context.Context
 	ps          *pubsub.PubSub
-	roomSub     *pubsub.Subscription
-	roomTopic   *pubsub.Topic
 	currentRoom string
 	roomLock    sync.Mutex
 
-	rooms map[string]*room
+	roomNames map[string]Room
+	rooms     map[string]*canvas.Canvas
 }
-
-const roomTopic = "rooms"
 
 func main() {
 	nameFlag := flag.String("name", "", "Name to use in whiteboard")
@@ -63,26 +66,17 @@ func main() {
 		name = fmt.Sprintf("%s-%s", os.Getenv("USER"), peer)
 	}
 
-	topic, err := ps.Join(roomTopic)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	sub, err := topic.Subscribe()
-	if err != nil {
-		log.Fatal()
-	}
-
 	host := Peer{
-		name:      name,
-		node:      node,
-		ctx:       ctx,
-		ps:        ps,
-		roomSub:   sub,
-		roomTopic: topic,
+		name: name,
+		node: node,
+		ctx:  ctx,
+		ps:   ps,
 
-		rooms: make(map[string]*room, 128),
+		roomNames: make(map[string]Room, 128),
+		rooms:     make(map[string]*canvas.Canvas, 128),
 	}
+
+	go host.listenRooms()
 
 	s := mdns.NewMdnsService(node, "chalkboard", &host)
 	err = s.Start()
@@ -108,48 +102,36 @@ func main() {
 	gtk.Main()
 }
 
-type line struct {
-	Index  int
-	Red    float64
-	Green  float64
-	Blue   float64
-	Width  float64
-	Points []point
-}
-
-type point struct {
-	X float64
-	Y float64
-}
-
 func initWindow(win *gtk.Window, host *Peer) {
 	builder, err := gtk.BuilderNewFromFile("./gui.ui")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	box, err := utils.BuilderGetObject[*gtk.Paned](builder, "body")
+	box, err := BuilderGetObject[*gtk.Paned](builder, "body")
 	win.Add(box)
 
-	var currentLine line
-	buttonPressed := false
-
-	roomView, err := utils.BuilderGetObject[*gtk.TreeView](builder, "rooms")
+	roomView, err := BuilderGetObject[*gtk.TreeView](builder, "rooms")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	roomName, err := utils.BuilderGetObject[*gtk.Entry](builder, "room-name")
+	roomName, err := BuilderGetObject[*gtk.Entry](builder, "room-name")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	addRoomButton, err := utils.BuilderGetObject[*gtk.Button](builder, "add-room")
+	addRoomButton, err := BuilderGetObject[*gtk.Button](builder, "add-room")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	drawArea, err := utils.BuilderGetObject[*gtk.DrawingArea](builder, "draw")
+	refreshRoomButton, err := BuilderGetObject[*gtk.Button](builder, "refresh-room")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	drawArea, err := BuilderGetObject[*gtk.DrawingArea](builder, "draw")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -158,6 +140,26 @@ func initWindow(win *gtk.Window, host *Peer) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	roomRefresh := func() {
+		host.roomLock.Lock()
+		for _, r := range host.roomNames {
+			for _, name := range r.Rooms {
+				if _, ok := r.iters[name]; ok {
+					continue
+				}
+
+				r.iters[name] = roomModel.Append()
+				roomModel.SetValue(r.iters[name], 0, name)
+			}
+		}
+
+		host.roomLock.Unlock()
+	}
+
+	refreshRoomButton.Connect("clicked", func() {
+		go roomRefresh()
+	})
 
 	roomView.SetModel(roomModel)
 	roomView.Connect("row-activated",
@@ -168,7 +170,7 @@ func initWindow(win *gtk.Window, host *Peer) {
 				return
 			}
 
-			name, err := utils.ModelGetValue[string](roomModel.ToTreeModel(), iter, 0)
+			name, err := ModelGetValue[string](roomModel.ToTreeModel(), iter, 0)
 			if err != nil {
 				log.Printf("Error joining room: %s", err)
 				return
@@ -190,9 +192,23 @@ func initWindow(win *gtk.Window, host *Peer) {
 			return
 		}
 
-		iter := roomModel.Append()
-		roomModel.SetValue(iter, 0, name)
-		drawArea.QueueDraw()
+		host.roomLock.Lock()
+		var room Room
+		if _, ok := host.roomNames[host.name]; !ok {
+			room = Room{
+				Owner: host.name,
+				Rooms: make([]string, 0, 128),
+				iters: make(map[string]*gtk.TreeIter, 128),
+			}
+		} else {
+			room = host.roomNames[host.name]
+		}
+
+		room.Rooms = append(room.Rooms, name)
+		host.roomNames[room.Owner] = room
+		host.roomLock.Unlock()
+
+		roomRefresh()
 	})
 
 	// messages from other users
@@ -206,19 +222,16 @@ func initWindow(win *gtk.Window, host *Peer) {
 		}
 	}()
 
+	var currentLine canvas.Line
+	buttonPressed := false
+
 	drawArea.Connect("draw", func(d *gtk.DrawingArea, cr *cairo.Context) {
-		room := host.getCurrentRoom()
-		if room == nil {
+		room, ok := host.rooms[host.currentRoom]
+		if !ok {
 			return
 		}
 
-		room.lineLock.Lock()
-
-		for _, line := range room.lines {
-			line.draw(cr)
-		}
-
-		room.lineLock.Unlock()
+		room.Draw(cr)
 	})
 
 	drawArea.Connect("motion-notify-event", func(d *gtk.DrawingArea, event *gdk.Event) {
@@ -229,24 +242,23 @@ func initWindow(win *gtk.Window, host *Peer) {
 			return
 		}
 
-		room := host.getCurrentRoom()
-		if room == nil {
+		if _, ok := host.rooms[host.currentRoom]; !ok {
 			return
 		}
 
 		if !buttonPressed {
-			currentLine = line{
+			currentLine = canvas.Line{
 				Index:  currentLine.Index + 1,
 				Red:    0,
 				Green:  0,
 				Blue:   0,
 				Width:  2,
-				Points: make([]point, 0, 1024),
+				Points: make([]canvas.Point, 0, 1024),
 			}
 			buttonPressed = true
 		}
 
-		p := point{
+		p := canvas.Point{
 			X: b.X(),
 			Y: b.Y(),
 		}
@@ -257,79 +269,19 @@ func initWindow(win *gtk.Window, host *Peer) {
 	})
 }
 
-func (l *line) draw(cr *cairo.Context) {
-	if len(l.Points) == 0 {
-		return
-	}
-
-	cr.SetSourceRGB(l.Red, l.Green, l.Blue)
-
-	start := l.Points[0]
-	cr.MoveTo(start.X, start.Y)
-	for _, p := range l.Points {
-		cr.LineTo(p.X, p.Y)
-	}
-
-	cr.SetLineWidth(l.Width)
-	cr.Stroke()
-}
-
-type message struct {
-	LineIndex  int
-	Line       line
-	SenderID   string
-	SenderName string
-}
-
-type room struct {
-	Messages chan *message
-	active   chan bool
-	host     *Peer
-	topic    *pubsub.Topic
-
-	roomName string
-	lineLock sync.Mutex
-	lines    map[string]line
-}
-
-func newRoom(host *Peer, name string) (*room, error) {
-	topic, err := host.ps.Join(name)
-	if err != nil {
-		return nil, err
-	}
-
-	r := &room{
-		Messages: make(chan *message, 10),
-		active:   make(chan bool, 10),
-		host:     host,
-		topic:    topic,
-
-		roomName: name,
-		lines:    make(map[string]line),
-	}
-
-	go r.readLoop()
-	return r, nil
-}
-
-func (r *room) put(host string, l line) {
-	name := host + "-" + strconv.Itoa(l.Index)
-
-	r.lineLock.Lock()
-	r.lines[name] = l
-	r.lineLock.Unlock()
-}
-
 func (host *Peer) joinRoom(roomName string) error {
-	if _, ok := host.rooms[host.currentRoom]; ok {
-		//room.active <- false
+	if room, ok := host.rooms[host.currentRoom]; ok {
+		room.Active <- false
 	}
 
-	host.roomLock.Lock()
 	if _, ok := host.rooms[roomName]; !ok {
-		room, err := newRoom(host, roomName)
+		topic, err := host.ps.Join(roomName)
 		if err != nil {
-			host.roomLock.Unlock()
+			return err
+		}
+
+		room, err := canvas.NewCanvas(topic, host.ctx, host.node.ID())
+		if err != nil {
 			return err
 		}
 
@@ -337,23 +289,13 @@ func (host *Peer) joinRoom(roomName string) error {
 	}
 
 	host.currentRoom = roomName
-	host.roomLock.Unlock()
-
-	//host.rooms[host.currentRoom].active <- true
+	host.rooms[host.currentRoom].Active <- true
 	return nil
 }
 
-func (host *Peer) getCurrentRoom() *room {
-	host.roomLock.Lock()
-	room := host.rooms[host.currentRoom]
-	host.roomLock.Unlock()
-
-	return room
-}
-
-func (host *Peer) publish(l line, lineIndex int) error {
+func (host *Peer) publish(l canvas.Line, lineIndex int) error {
 	peerID := host.node.ID()
-	msg := message{
+	msg := canvas.Message{
 		Line:       l,
 		LineIndex:  lineIndex,
 		SenderID:   peerID.String(),
@@ -365,80 +307,122 @@ func (host *Peer) publish(l line, lineIndex int) error {
 		return err
 	}
 
-	room := host.getCurrentRoom()
-	if room == nil {
+	room, ok := host.rooms[host.currentRoom]
+	if !ok {
 		return nil
 	}
 
-	room.put(host.name, l)
-	return room.topic.Publish(host.ctx, msgBytes)
-}
-
-func (r *room) readLoop() {
-	var (
-	// active bool
-	// err    error
-	)
-
-	sub, err := r.topic.Subscribe()
-	if err != nil {
-		log.Print("Error activating subscription:", err)
-	}
-	for {
-		/*
-			// update sub state
-			if active && sub == nil {
-				sub, err = r.topic.Subscribe()
-				if err != nil {
-					log.Print("Error activating subscription:", err)
-				}
-			} else if !active && sub != nil {
-				sub.Cancel()
-				sub = nil
-			}
-
-			// check for close or open subscription
-			if active {
-				select {
-				case newState := <-r.active:
-					active = newState
-					continue
-				default:
-				}
-			} else {
-				active = <-r.active
-				continue
-			}
-		*/
-
-		msg, err := sub.Next(r.host.ctx)
-		if err != nil {
-			sub = nil
-			log.Println("Error getting the next message", err)
-			continue
-		}
-
-		if msg.ReceivedFrom == r.host.node.ID() {
-			continue
-		}
-
-		cm := new(message)
-		err = json.Unmarshal(msg.Data, cm)
-		if err != nil {
-			continue
-		}
-
-		r.put(cm.SenderName, cm.Line)
-	}
+	room.Put(host.name, l)
+	return room.Topic.Publish(host.ctx, msgBytes)
 }
 
 // HandlePeerFound connects to peers discovered via mDNS. Once they're connected,
 // the PubSub system will automatically start interacting with them if they also
 // support PubSub.
-func (n *Peer) HandlePeerFound(pi peer.AddrInfo) {
+func (host *Peer) HandlePeerFound(pi peer.AddrInfo) {
 	fmt.Printf("discovered new peer %s\n", pi.ID)
-	err := n.node.Connect(context.Background(), pi)
+	err := host.node.Connect(context.Background(), pi)
 	if err != nil {
 		fmt.Printf("error connecting to peer %s: %s\n", pi.ID, err)
 	}
+}
+
+func (host *Peer) listenRooms() {
+	roomTopic, err := host.ps.Join("/rooms")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	roomSub, err := roomTopic.Subscribe()
+	if err != nil {
+		log.Fatal()
+	}
+
+	// Recieve rooms for other hosts
+	go func() {
+		for {
+			msg, err := roomSub.Next(host.ctx)
+			if err != nil {
+				log.Println("Error listening for rooms:", err)
+				continue
+			}
+
+			// ignore our own messages
+			if msg.ReceivedFrom == host.node.ID() {
+				continue
+			}
+
+			var rooms Room
+			err = json.Unmarshal(msg.Data, &rooms)
+			if err != nil {
+				log.Println("Error listening for rooms:", err)
+				continue
+			}
+
+			log.Printf("Received rooms: %v", rooms)
+
+			// update rooms map
+			host.roomLock.Lock()
+			if _, ok := host.roomNames[rooms.Owner]; ok {
+				rooms.iters = host.roomNames[rooms.Owner].iters
+			} else {
+				rooms.iters = make(map[string]*gtk.TreeIter, 128)
+			}
+
+			host.roomNames[rooms.Owner] = rooms
+			host.roomLock.Unlock()
+		}
+	}()
+
+	// Send out rooms for this host
+	go func() {
+		for {
+			time.Sleep(time.Second)
+
+			host.roomLock.Lock()
+			data, err := json.Marshal(host.roomNames[host.name])
+			host.roomLock.Unlock()
+			if err != nil {
+				log.Println("Error sending rooms:", err)
+				continue
+			}
+
+			roomTopic.Publish(host.ctx, data)
+		}
+	}()
+}
+
+func BuilderGetObject[T any](builder *gtk.Builder, name string) (obj T, err error) {
+	gtkObject, err := builder.GetObject(name)
+	if err != nil {
+		return
+	}
+
+	goObj, ok := gtkObject.(T)
+	if !ok {
+		err = fmt.Errorf("Builder object '%s' is type %v", name, reflect.TypeOf(goObj))
+		return
+	}
+
+	return goObj, nil
+}
+
+func ModelGetValue[T any](model *gtk.TreeModel, iter *gtk.TreeIter, col int) (obj T, err error) {
+	id, err := model.GetValue(iter, col)
+	if err != nil {
+		return
+	}
+
+	goObj, err := id.GoValue()
+	if err != nil {
+		return
+	}
+
+	obj, ok := goObj.(T)
+	if !ok {
+		err = fmt.Errorf("Model value in col '%d' is type %v", col, reflect.TypeOf(goObj))
+		return
+	}
+
+	return
 }
