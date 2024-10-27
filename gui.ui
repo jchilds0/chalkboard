@@ -35,15 +35,30 @@
           <object class="GtkTreeView" id="rooms">
             <property name="headers-visible">True</property>
 
+            <!-- First Column -->
             <child>
-              <!-- First Column -->
               <object class="GtkTreeViewColumn">
-                <property name="title">Room Name</property>
+                <property name="title">Owner</property>
 
                 <child>
                   <object class="GtkCellRendererText" id="renderer1"/>
                   <attributes>
                     <attribute name="text">0</attribute> 
+                  </attributes>
+                </child>
+
+              </object>
+            </child>
+
+            <!-- Second Column -->
+            <child>
+              <object class="GtkTreeViewColumn">
+                <property name="title">Room Name</property>
+
+                <child>
+                  <object class="GtkCellRendererText" id="renderer2"/>
+                  <attributes>
+                    <attribute name="text">1</attribute> 
                   </attributes>
                 </child>
 
