@@ -27,7 +27,6 @@ func main() {
 
 	// start a libp2p node with default settings
 	node, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
-
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -98,7 +98,12 @@ func (host *Peer) JoinRoom(ownerName, roomName string) (c *canvas.Canvas, err er
 // the PubSub system will automatically start interacting with them if they also
 // support PubSub.
 func (host *Peer) HandlePeerFound(pi peer.AddrInfo) {
-	fmt.Printf("discovered new peer %s\n", pi.ID)
+	//fmt.Printf("discovered new peer %s\n", pi.ID)
+	if pi.ID > host.Host.ID() {
+		// if peers' id is greater than ours, wait for it to connect
+		return
+	}
+
 	err := host.Host.Connect(context.Background(), pi)
 	if err != nil {
 		fmt.Printf("error connecting to peer %s: %s\n", pi.ID, err)
