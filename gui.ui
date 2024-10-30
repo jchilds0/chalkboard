@@ -4,6 +4,7 @@
     <property name="orientation">horizontal</property>
     <property name="position">700</property>
 
+    <!-- Left hand menu -->
     <child>
       <object class="GtkBox">
         <property name="orientation">vertical</property>
@@ -14,6 +15,11 @@
 
             <child>
               <object class="GtkEntry" id="room-name"></object>
+
+              <packing>
+                <property name="padding">10</property>
+                <property name="expand">TRUE</property>
+              </packing>
             </child>
 
             <child>
@@ -26,9 +32,17 @@
               <object class="GtkButton" id="refresh-room">
                 <property name="label">Refresh</property>
               </object>
+
+              <packing>
+                <property name="padding">10</property>
+              </packing>
             </child>
 
           </object>
+
+          <packing>
+            <property name="padding">10</property>
+          </packing>
         </child>
 
         <child>
@@ -39,6 +53,7 @@
             <child>
               <object class="GtkTreeViewColumn">
                 <property name="title">Owner</property>
+                <property name="expand">TRUE</property>
 
                 <child>
                   <object class="GtkCellRendererText" id="renderer1"/>
@@ -54,6 +69,7 @@
             <child>
               <object class="GtkTreeViewColumn">
                 <property name="title">Room Name</property>
+                <property name="expand">TRUE</property>
 
                 <child>
                   <object class="GtkCellRendererText" id="renderer2"/>
@@ -71,12 +87,39 @@
       </object>
     </child>
 
+    <!-- Drawing Area -->
     <child>
       <object class="GtkBox">
         <property name="orientation">vertical</property>
 
         <child>
-          <object class="GtkSeparator">
+          <object class="GtkToolbar" id="toolbar">
+            <property name="toolbar-style">icons</property>
+
+            <child>
+              <object class="GtkSeparatorToolItem">
+                <property name="draw">FALSE</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkToolButton" id="pencil-button">
+                <property name="label">Pencil</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkSeparatorToolItem">
+                <property name="draw">FALSE</property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkToolButton" id="eraser-button">
+                <property name="label">Eraser</property>
+              </object>
+            </child>
+
           </object>
 
           <packing>
@@ -85,12 +128,18 @@
         </child>
 
         <child>
-          <object class="GtkDrawingArea" id="draw">
+          <object class="GtkSeparator">
+            <property name="orientation">horizontal</property>
           </object>
+        </child>
+
+        <child>
+          <object class="GtkDrawingArea" id="draw-area"></object>
 
           <packing>
-            <property name="expand">true</property>
+            <property name="expand">TRUE</property>
           </packing>
+
         </child>
 
       </object>

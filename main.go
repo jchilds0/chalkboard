@@ -7,17 +7,24 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"reflect"
-	"time"
+	"strconv"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
+	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
+
+var currentRoom *canvas.Canvas
+var pencil = canvas.Pencil{
+	Width: 10,
+}
 
 func main() {
 	nameFlag := flag.String("name", "", "Name to use in whiteboard")
@@ -81,6 +88,11 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 	box, err := BuilderGetObject[*gtk.Paned](builder, "body")
 	win.Add(box)
 
+	err = initToolbar(builder)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	roomView, err := BuilderGetObject[*gtk.TreeView](builder, "rooms")
 	if err != nil {
 		log.Fatal(err)
@@ -96,7 +108,7 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 		log.Fatal(err)
 	}
 
-	drawArea, err := BuilderGetObject[*gtk.DrawingArea](builder, "draw")
+	drawArea, err := BuilderGetObject[*gtk.DrawingArea](builder, "draw-area")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,47 +116,25 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	var currentRoom *canvas.Canvas
 
 	roomView.SetModel(host.Rooms)
 	roomView.Connect("row-activated",
 		func(tree *gtk.TreeView, path *gtk.TreePath, column *gtk.TreeViewColumn) {
-			model := host.Rooms.ToTreeModel()
-
-			iter, err := host.Rooms.GetIter(path)
-			if err != nil {
-				log.Printf("Error joining room: %s", err)
-				return
-			}
-
-			ownerName, err := ModelGetValue[string](model, iter, client.OWNER_NAME)
-			if err != nil {
-				log.Printf("Error joining room: %s", err)
-				return
-			}
-
-			roomName, err := ModelGetValue[string](model, iter, client.ROOM_NAME)
-			if err != nil {
-				log.Printf("Error joining room: %s", err)
-				return
-			}
-
 			if currentRoom != nil && currentRoom.OwnerName != host.Name {
 				err = currentRoom.Close()
 				if err != nil {
-					log.Println("Error closing room", ownerName, roomName, err)
+					log.Println("Error closing room:", currentRoom.OwnerName, currentRoom.RoomName, err)
 				}
 			}
 
-			c, err := host.JoinRoom(ownerName, roomName)
+			c, err := host.JoinRoomPath(path)
 			if err != nil {
-				log.Println("Error joining room", ownerName, roomName, err)
+				log.Println("Error joining room:", err)
 				return
 			}
 
 			currentRoom = c
-			log.Printf("Joined /%s/%s", ownerName, roomName)
+			log.Printf("Joined /%s/%s", c.OwnerName, c.RoomName)
 		})
 
 	addRoomButton.Connect("clicked", func() {
@@ -166,13 +156,6 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 	// messages from other users
 	drawArea.AddEvents(gdk.BUTTON1_MASK)
 	drawArea.AddEvents(int(gdk.POINTER_MOTION_MASK))
-
-	go func() {
-		for {
-			time.Sleep(50 * time.Millisecond)
-			drawArea.QueueDraw()
-		}
-	}()
 
 	var currentLine canvas.Line
 	buttonPressed := false
@@ -200,10 +183,7 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 		if !buttonPressed {
 			currentLine = canvas.Line{
 				Index:  currentLine.Index + 1,
-				Red:    0,
-				Green:  0,
-				Blue:   0,
-				Width:  2,
+				Pencil: pencil,
 				Points: make([]canvas.Point, 0, 1024),
 			}
 			buttonPressed = true
@@ -220,6 +200,148 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 	})
 }
 
+func initToolbar(builder *gtk.Builder) error {
+	toolbar, err := BuilderGetObject[*gtk.Toolbar](builder, "toolbar")
+	if err != nil {
+		return err
+	}
+
+	pencilButton, err := BuilderGetObject[*gtk.ToolButton](builder, "pencil-button")
+	if err != nil {
+		return err
+	}
+
+	err = setToolButtonIcon(pencilButton, "assets/edit-pen-icon.svg")
+	if err != nil {
+		return err
+	}
+
+	eraserButton, err := BuilderGetObject[*gtk.ToolButton](builder, "eraser-button")
+	if err != nil {
+		return err
+	}
+
+	err = setToolButtonIcon(eraserButton, "assets/eraser-icon.svg")
+	if err != nil {
+		return err
+	}
+
+	sep, err := gtk.SeparatorToolItemNew()
+	if err != nil {
+		return err
+	}
+
+	toolbar.Add(sep)
+
+	pencilWidths := []float64{8, 12, 16, 24}
+	buttons := make([]*gtk.RadioButton, len(pencilWidths))
+	var widthGroup *glib.SList
+
+	for i, width := range pencilWidths {
+		buttons[i], err = NewToolButtonWithCircle(widthGroup, strconv.FormatFloat(width, 'f', 10, 64), width)
+		if err != nil {
+			return err
+		}
+
+		widthGroup, err = buttons[i].GetGroup()
+		if err != nil {
+			return err
+		}
+
+		item, err := gtk.ToolItemNew()
+		if err != nil {
+			return err
+		}
+
+		item.Add(buttons[i])
+		toolbar.Add(item)
+
+		sep, err := gtk.SeparatorToolItemNew()
+		if err != nil {
+			return err
+		}
+
+		sep.SetDraw(false)
+		toolbar.Add(sep)
+	}
+
+	color, err := gtk.ColorButtonNew()
+	if err != nil {
+		return err
+	}
+
+	color.Connect("color-set", func() {
+		rgb := color.GetRGBA()
+
+		pencil.Red = rgb.GetRed()
+		pencil.Green = rgb.GetGreen()
+		pencil.Blue = rgb.GetBlue()
+
+		toolbar.QueueDraw()
+	})
+
+	item, err := gtk.ToolItemNew()
+	if err != nil {
+		return err
+	}
+
+	item.Add(color)
+	toolbar.Add(item)
+
+	sep, err = gtk.SeparatorToolItemNew()
+	if err != nil {
+		return err
+	}
+
+	toolbar.Add(sep)
+
+	return nil
+}
+
+func setToolButtonIcon(button *gtk.ToolButton, filename string) error {
+	buf, err := gdk.PixbufNewFromFileAtSize(filename, 18, 18)
+	if err != nil {
+		return err
+	}
+
+	img, err := gtk.ImageNewFromPixbuf(buf)
+	if err != nil {
+		return err
+	}
+
+	button.SetIconWidget(img)
+	return nil
+}
+
+func NewToolButtonWithCircle(group *glib.SList, label string, width float64) (*gtk.RadioButton, error) {
+	areaSize := 24
+
+	area, err := gtk.DrawingAreaNew()
+	if err != nil {
+		return nil, err
+	}
+
+	area.SetSizeRequest(areaSize, areaSize)
+	area.Connect("draw", func(da *gtk.DrawingArea, cr *cairo.Context) {
+		cr.SetSourceRGB(pencil.Red, pencil.Green, pencil.Blue)
+		cr.Arc(float64(areaSize)/2, float64(areaSize)/2, width/2, 0, 2*math.Pi)
+		cr.Fill()
+	})
+
+	button, err := gtk.RadioButtonNew(group)
+	if err != nil {
+		return nil, err
+	}
+
+	button.SetMode(false)
+	button.Connect("clicked", func() {
+		pencil.Width = width
+	})
+
+	button.Add(area)
+	return button, nil
+}
+
 func BuilderGetObject[T any](builder *gtk.Builder, name string) (obj T, err error) {
 	gtkObject, err := builder.GetObject(name)
 	if err != nil {
@@ -233,24 +355,4 @@ func BuilderGetObject[T any](builder *gtk.Builder, name string) (obj T, err erro
 	}
 
 	return goObj, nil
-}
-
-func ModelGetValue[T any](model *gtk.TreeModel, iter *gtk.TreeIter, col int) (obj T, err error) {
-	id, err := model.GetValue(iter, col)
-	if err != nil {
-		return
-	}
-
-	goObj, err := id.GoValue()
-	if err != nil {
-		return
-	}
-
-	obj, ok := goObj.(T)
-	if !ok {
-		err = fmt.Errorf("Model value in col '%d' is type %v", col, reflect.TypeOf(goObj))
-		return
-	}
-
-	return
 }

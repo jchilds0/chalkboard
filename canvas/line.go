@@ -2,12 +2,16 @@ package canvas
 
 import "github.com/gotk3/gotk3/cairo"
 
+type Pencil struct {
+	Red   float64
+	Green float64
+	Blue  float64
+	Width float64
+}
+
 type Line struct {
 	Index  int
-	Red    float64
-	Green  float64
-	Blue   float64
-	Width  float64
+	Pencil Pencil
 	Points []Point
 }
 
@@ -21,7 +25,7 @@ func (l *Line) Draw(cr *cairo.Context) {
 		return
 	}
 
-	cr.SetSourceRGB(l.Red, l.Green, l.Blue)
+	cr.SetSourceRGB(l.Pencil.Red, l.Pencil.Green, l.Pencil.Blue)
 
 	start := l.Points[0]
 	cr.MoveTo(start.X, start.Y)
@@ -29,6 +33,6 @@ func (l *Line) Draw(cr *cairo.Context) {
 		cr.LineTo(p.X, p.Y)
 	}
 
-	cr.SetLineWidth(l.Width)
+	cr.SetLineWidth(l.Pencil.Width)
 	cr.Stroke()
 }

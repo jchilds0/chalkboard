@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"time"
 
 	"github.com/gotk3/gotk3/glib"
@@ -56,6 +57,30 @@ func NewPeer(name string, h host.Host, ctx context.Context, ps *pubsub.PubSub) (
 	go host.listenRooms()
 
 	return host, nil
+}
+
+func (host *Peer) JoinRoomPath(path *gtk.TreePath) (c *canvas.Canvas, err error) {
+	model := host.Rooms.ToTreeModel()
+
+	iter, err := host.Rooms.GetIter(path)
+	if err != nil {
+		log.Printf("Error joining room: %s", err)
+		return
+	}
+
+	ownerName, err := ModelGetValue[string](model, iter, OWNER_NAME)
+	if err != nil {
+		log.Printf("Error joining room: %s", err)
+		return
+	}
+
+	roomName, err := ModelGetValue[string](model, iter, ROOM_NAME)
+	if err != nil {
+		log.Printf("Error joining room: %s", err)
+		return
+	}
+
+	return host.JoinRoom(ownerName, roomName)
 }
 
 func (host *Peer) JoinRoom(ownerName, roomName string) (c *canvas.Canvas, err error) {
@@ -219,4 +244,24 @@ func (host *Peer) listenRooms() {
 			}
 		}
 	}()
+}
+
+func ModelGetValue[T any](model *gtk.TreeModel, iter *gtk.TreeIter, col int) (obj T, err error) {
+	id, err := model.GetValue(iter, col)
+	if err != nil {
+		return
+	}
+
+	goObj, err := id.GoValue()
+	if err != nil {
+		return
+	}
+
+	obj, ok := goObj.(T)
+	if !ok {
+		err = fmt.Errorf("Model value in col '%d' is type %v", col, reflect.TypeOf(goObj))
+		return
+	}
+
+	return
 }
