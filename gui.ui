@@ -89,57 +89,79 @@
 
     <!-- Drawing Area -->
     <child>
-      <object class="GtkBox">
-        <property name="orientation">vertical</property>
-
-        <child>
-          <object class="GtkToolbar" id="toolbar">
-            <property name="toolbar-style">icons</property>
-
-            <child>
-              <object class="GtkSeparatorToolItem">
-                <property name="draw">FALSE</property>
-              </object>
-            </child>
-            
-            <child>
-              <object class="GtkToolButton" id="pencil-button">
-                <property name="label">Pencil</property>
-              </object>
-            </child>
-            
-            <child>
-              <object class="GtkSeparatorToolItem">
-                <property name="draw">FALSE</property>
-              </object>
-            </child>
-
-            <child>
-              <object class="GtkToolButton" id="eraser-button">
-                <property name="label">Eraser</property>
-              </object>
-            </child>
-
-          </object>
-
-          <packing>
-            <property name="padding">5</property>
-          </packing>
-        </child>
-
-        <child>
-          <object class="GtkSeparator">
-            <property name="orientation">horizontal</property>
-          </object>
-        </child>
-
+      <object class="GtkOverlay">
         <child>
           <object class="GtkDrawingArea" id="draw-area"></object>
+        </child>
+
+        <child type="overlay">
+          <object class="GtkFixed" id="tool-fixed">
+
+            <child>
+              <object class="GtkBox" id="tool-box">
+                <property name="name">toolbox</property>
+                <property name="orientation">vertical</property>
+                <property name="halign">start</property>
+                <property name="valign">start</property>
+                <property name="expand">TRUE</property>
+
+                <child>
+                  <object class="GtkToolbar" id="toolbar">
+                    <property name="name">toolbar</property>
+                    <property name="toolbar-style">icons</property>
+                    <property name="show-arrow">FALSE</property>
+
+                    <child>
+                      <object class="GtkToolItem" id="pencil-item">
+
+                        <child>
+                          <object class="GtkRadioButton" id="pencil-button">
+                            <property name="draw-indicator">FALSE</property>
+                          </object>
+                        </child>
+
+                      </object>
+                    </child>
+                    
+                    <child>
+                      <object class="GtkSeparatorToolItem">
+                        <property name="draw">FALSE</property>
+                      </object>
+                    </child>
+
+                    <child>
+                      <object class="GtkToolItem" id="eraser-item">
+
+                        <child>
+                          <object class="GtkRadioButton" id="eraser-button">
+                            <property name="draw-indicator">FALSE</property>
+                            <property name="group">pencil-button</property>
+                          </object>
+                        </child>
+
+                      </object>
+                    </child>
+
+                    <child>
+                      <object class="GtkSeparatorToolItem"></object>
+                    </child>
+                    
+                  </object>
+                </child>
+
+              </object>
+
+              <packing>
+                <property name="x">50</property>
+                <property name="y">50</property>
+              </packing>
+            </child>
+
+          </object>
 
           <packing>
-            <property name="expand">TRUE</property>
+            <property name="pass-through">TRUE</property>
           </packing>
-
         </child>
 
       </object>

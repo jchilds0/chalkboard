@@ -22,6 +22,7 @@ import (
 )
 
 var currentRoom *canvas.Canvas
+var eraser bool
 var pencil = canvas.Pencil{
 	Width: 10,
 }
@@ -80,6 +81,23 @@ func main() {
 }
 
 func initWindow(win *gtk.Window, host *client.Peer) {
+	screen, err := gdk.ScreenGetDefault()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	provider, err := gtk.CssProviderNew()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = provider.LoadFromPath("./gui.css")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	gtk.AddProviderForScreen(screen, provider, 600)
+
 	builder, err := gtk.BuilderNewFromFile("./gui.ui")
 	if err != nil {
 		log.Fatal(err)
@@ -157,17 +175,18 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 	drawArea.AddEvents(gdk.BUTTON1_MASK)
 	drawArea.AddEvents(int(gdk.POINTER_MOTION_MASK))
 
-	var currentLine canvas.Line
-	buttonPressed := false
-
 	drawArea.Connect("draw", func(d *gtk.DrawingArea, cr *cairo.Context) {
 		if currentRoom == nil {
 			return
 		}
 
+		cr.SetSourceRGB(1, 1, 1)
+		cr.Paint()
+
 		currentRoom.Draw(cr)
 	})
 
+	buttonPressed := false
 	drawArea.Connect("motion-notify-event", func(d *gtk.DrawingArea, event *gdk.Event) {
 		b := gdk.EventButtonNewFromEvent(event)
 		if b.State()&uint(gdk.BUTTON_PRESS_MASK) == 0 {
@@ -180,65 +199,111 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 			return
 		}
 
-		if !buttonPressed {
-			currentLine = canvas.Line{
-				Index:  currentLine.Index + 1,
-				Pencil: pencil,
-				Points: make([]canvas.Point, 0, 1024),
-			}
-			buttonPressed = true
+		if eraser {
+			currentRoom.ErasePoint(b.X(), b.Y())
+		} else {
+			currentRoom.AddPoint(pencil, buttonPressed, b.X(), b.Y())
 		}
 
-		p := canvas.Point{
-			X: b.X(),
-			Y: b.Y(),
-		}
-
-		currentLine.Points = append(currentLine.Points, p)
-		currentRoom.Write(host.Name, currentLine)
+		buttonPressed = true
 		drawArea.QueueDraw()
 	})
 }
 
 func initToolbar(builder *gtk.Builder) error {
+	fixed, err := BuilderGetObject[*gtk.Fixed](builder, "tool-fixed")
+	if err != nil {
+		return err
+	}
+
+	toolbox, err := BuilderGetObject[*gtk.Box](builder, "tool-box")
+	if err != nil {
+		return err
+	}
+
+	buttonPressed := false
+	posX, posY := 0, 0
+	delX, delY := 0, 0
+
+	toolbox.AddEvents(gdk.BUTTON1_MASK)
+	toolbox.AddEvents(int(gdk.POINTER_MOTION_MASK))
+	toolbox.Connect("motion-notify-event", func(box *gtk.Box, event *gdk.Event) {
+		b := gdk.EventButtonNewFromEvent(event)
+		if b.State()&uint(gdk.BUTTON_PRESS_MASK) == 0 {
+			// button not pressed
+			buttonPressed = false
+			return
+		}
+
+		if !buttonPressed {
+			xptr, err := fixed.Container.ChildGetProperty(toolbox, "x", glib.TYPE_INT)
+			if err != nil {
+				log.Println("Error moving toolbox:", err)
+				return
+			}
+
+			yptr, err := fixed.Container.ChildGetProperty(toolbox, "y", glib.TYPE_INT)
+			if err != nil {
+				log.Println("Error moving toolbox:", err)
+				return
+			}
+
+			posX = xptr.(int)
+			posY = yptr.(int)
+
+			delX = int(b.XRoot())
+			delY = int(b.YRoot())
+
+			buttonPressed = true
+			return
+		}
+
+		fixed.Move(toolbox, posX+int(b.XRoot())-delX, posY+int(b.YRoot())-delY)
+	})
+
 	toolbar, err := BuilderGetObject[*gtk.Toolbar](builder, "toolbar")
 	if err != nil {
 		return err
 	}
 
-	pencilButton, err := BuilderGetObject[*gtk.ToolButton](builder, "pencil-button")
-	if err != nil {
-		return err
+	{
+		pencilButton, err := BuilderGetObject[*gtk.RadioButton](builder, "pencil-button")
+		if err != nil {
+			return err
+		}
+
+		err = setToolButtonIcon(pencilButton, "assets/edit-pen-icon.svg")
+		if err != nil {
+			return err
+		}
+
+		pencilButton.Connect("clicked", func() {
+			eraser = !pencilButton.GetActive()
+		})
 	}
 
-	err = setToolButtonIcon(pencilButton, "assets/edit-pen-icon.svg")
-	if err != nil {
-		return err
-	}
+	{
+		eraserButton, err := BuilderGetObject[*gtk.RadioButton](builder, "eraser-button")
+		if err != nil {
+			return err
+		}
 
-	eraserButton, err := BuilderGetObject[*gtk.ToolButton](builder, "eraser-button")
-	if err != nil {
-		return err
-	}
+		err = setToolButtonIcon(eraserButton, "assets/eraser-icon.svg")
+		if err != nil {
+			return err
+		}
 
-	err = setToolButtonIcon(eraserButton, "assets/eraser-icon.svg")
-	if err != nil {
-		return err
+		eraserButton.Connect("clicked", func() {
+			eraser = eraserButton.GetActive()
+		})
 	}
-
-	sep, err := gtk.SeparatorToolItemNew()
-	if err != nil {
-		return err
-	}
-
-	toolbar.Add(sep)
 
 	pencilWidths := []float64{8, 12, 16, 24}
 	buttons := make([]*gtk.RadioButton, len(pencilWidths))
 	var widthGroup *glib.SList
 
 	for i, width := range pencilWidths {
-		buttons[i], err = NewToolButtonWithCircle(widthGroup, strconv.FormatFloat(width, 'f', 10, 64), width)
+		buttons[i], err = newToolButtonWithCircle(widthGroup, strconv.FormatFloat(width, 'f', 10, 64), width)
 		if err != nil {
 			return err
 		}
@@ -288,7 +353,7 @@ func initToolbar(builder *gtk.Builder) error {
 	item.Add(color)
 	toolbar.Add(item)
 
-	sep, err = gtk.SeparatorToolItemNew()
+	sep, err := gtk.SeparatorToolItemNew()
 	if err != nil {
 		return err
 	}
@@ -298,22 +363,7 @@ func initToolbar(builder *gtk.Builder) error {
 	return nil
 }
 
-func setToolButtonIcon(button *gtk.ToolButton, filename string) error {
-	buf, err := gdk.PixbufNewFromFileAtSize(filename, 18, 18)
-	if err != nil {
-		return err
-	}
-
-	img, err := gtk.ImageNewFromPixbuf(buf)
-	if err != nil {
-		return err
-	}
-
-	button.SetIconWidget(img)
-	return nil
-}
-
-func NewToolButtonWithCircle(group *glib.SList, label string, width float64) (*gtk.RadioButton, error) {
+func newToolButtonWithCircle(group *glib.SList, label string, width float64) (*gtk.RadioButton, error) {
 	areaSize := 24
 
 	area, err := gtk.DrawingAreaNew()
@@ -339,7 +389,25 @@ func NewToolButtonWithCircle(group *glib.SList, label string, width float64) (*g
 	})
 
 	button.Add(area)
+	button.SetVisible(true)
+	button.SetTooltipText(label)
+
 	return button, nil
+}
+
+func setToolButtonIcon(button *gtk.RadioButton, fileName string) error {
+	buf, err := gdk.PixbufNewFromFileAtSize(fileName, 18, 18)
+	if err != nil {
+		return err
+	}
+
+	img, err := gtk.ImageNewFromPixbuf(buf)
+	if err != nil {
+		return err
+	}
+
+	button.Add(img)
+	return nil
 }
 
 func BuilderGetObject[T any](builder *gtk.Builder, name string) (obj T, err error) {
