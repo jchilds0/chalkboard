@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"time"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
@@ -131,10 +132,6 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 		log.Fatal(err)
 	}
 
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	roomView.SetModel(host.Rooms)
 	roomView.Connect("row-activated",
 		func(tree *gtk.TreeView, path *gtk.TreePath, column *gtk.TreeViewColumn) {
@@ -174,7 +171,6 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 	// messages from other users
 	drawArea.AddEvents(gdk.BUTTON1_MASK)
 	drawArea.AddEvents(int(gdk.POINTER_MOTION_MASK))
-
 	drawArea.Connect("draw", func(d *gtk.DrawingArea, cr *cairo.Context) {
 		if currentRoom == nil {
 			return
@@ -192,6 +188,7 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 		if b.State()&uint(gdk.BUTTON_PRESS_MASK) == 0 {
 			// button not pressed
 			buttonPressed = false
+			// lastPress = time.Now()
 			return
 		}
 
@@ -199,15 +196,26 @@ func initWindow(win *gtk.Window, host *client.Peer) {
 			return
 		}
 
+		// log.Println(time.Now().Sub(lastPress))
+		// lastPress = time.Now()
+
+		p := canvas.Point{X: b.X(), Y: b.Y()}
+
 		if eraser {
-			currentRoom.ErasePoint(b.X(), b.Y())
+			currentRoom.ErasePoint(p)
 		} else {
-			currentRoom.AddPoint(pencil, buttonPressed, b.X(), b.Y())
+			currentRoom.AddPoint(pencil, buttonPressed, p)
 		}
 
 		buttonPressed = true
-		drawArea.QueueDraw()
 	})
+
+	go func() {
+		for {
+			time.Sleep(20 * time.Millisecond)
+			drawArea.QueueDraw()
+		}
+	}()
 }
 
 func initToolbar(builder *gtk.Builder) error {
@@ -298,7 +306,7 @@ func initToolbar(builder *gtk.Builder) error {
 		})
 	}
 
-	pencilWidths := []float64{8, 12, 16, 24}
+	pencilWidths := []float64{4, 8, 12, 16, 24}
 	buttons := make([]*gtk.RadioButton, len(pencilWidths))
 	var widthGroup *glib.SList
 
@@ -329,6 +337,8 @@ func initToolbar(builder *gtk.Builder) error {
 		sep.SetDraw(false)
 		toolbar.Add(sep)
 	}
+
+	pencil.Width = pencilWidths[0]
 
 	color, err := gtk.ColorButtonNew()
 	if err != nil {

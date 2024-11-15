@@ -50,7 +50,7 @@ func NewCanvas(owner, room string, topic *pubsub.Topic, ctx context.Context, id 
 	return c, nil
 }
 
-func (c *Canvas) AddPoint(pencil Pencil, pressed bool, x, y float64) {
+func (c *Canvas) AddPoint(pencil Pencil, pressed bool, p Point) {
 	if !pressed {
 		currentLine = Line{
 			Index:  currentLine.Index + 1,
@@ -58,8 +58,6 @@ func (c *Canvas) AddPoint(pencil Pencil, pressed bool, x, y float64) {
 			Points: make([]Point, 0, 1024),
 		}
 	}
-
-	p := Point{X: x, Y: y}
 
 	currentLine.Points = append(currentLine.Points, p)
 	c.Write(c.OwnerName, currentLine)
@@ -135,9 +133,7 @@ func (c *Canvas) DrawErasor(cr *cairo.Context) {
 	cr.Fill()
 }
 
-func (c *Canvas) ErasePoint(x, y float64) {
-	p := Point{X: x, Y: y}
-
+func (c *Canvas) ErasePoint(p Point) {
 	for s, l := range c.Lines {
 		if !l.intersects(p) {
 			continue

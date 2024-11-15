@@ -10,4 +10,9 @@ Utilises [libp2p][libp2p] mDNS and pubsub to manage the peer to peer communicati
 
 ![chalkboard](assets/example.png)
 
+## Credits
+
+Icons from [UXWing][uxwing]
+
+[uxwing]: https://uxwing.com
 [libp2p]: https://libp2p.io
