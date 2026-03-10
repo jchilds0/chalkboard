@@ -30,6 +30,7 @@ type Canvas struct {
 	id        peer.ID
 
 	lineLock sync.Mutex
+	maxIndex int
 	Lines    map[string]Line
 }
 
@@ -52,11 +53,13 @@ func NewCanvas(owner, room string, topic *pubsub.Topic, ctx context.Context, id 
 
 func (c *Canvas) AddPoint(pencil Pencil, pressed bool, p Point) {
 	if !pressed {
+		c.lineLock.Lock()
 		currentLine = Line{
-			Index:  currentLine.Index + 1,
+			Index:  c.maxIndex + 1,
 			Pencil: pencil,
 			Points: make([]Point, 0, 1024),
 		}
+		c.lineLock.Unlock()
 	}
 
 	currentLine.Points = append(currentLine.Points, p)
@@ -179,6 +182,7 @@ func (c *Canvas) Put(host string, l Line) {
 
 	c.lineLock.Lock()
 	c.Lines[name] = l
+	c.maxIndex = max(c.maxIndex, l.Index)
 	c.lineLock.Unlock()
 }
 
