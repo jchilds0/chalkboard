@@ -274,8 +274,14 @@ func initToolbar(builder *gtk.Builder) error {
 		return err
 	}
 
+	var pencilGroup *glib.SList
 	{
 		pencilButton, err := BuilderGetObject[*gtk.RadioButton](builder, "pencil-button")
+		if err != nil {
+			return err
+		}
+
+		pencilGroup, err = pencilButton.GetGroup()
 		if err != nil {
 			return err
 		}
@@ -306,6 +312,38 @@ func initToolbar(builder *gtk.Builder) error {
 		})
 	}
 
+	{
+		// shape widgets
+		areaSize := 24
+		area, err := gtk.DrawingAreaNew()
+		if err != nil {
+			return err
+		}
+
+		area.SetSizeRequest(areaSize, areaSize)
+		area.Connect("draw", func(da *gtk.DrawingArea, cr *cairo.Context) {
+			cr.SetSourceRGB(pencil.Red, pencil.Green, pencil.Blue)
+			cr.Arc(float64(areaSize)/2, float64(areaSize)/2, 9, 0, 2*math.Pi)
+			cr.SetLineWidth(2)
+			cr.Stroke()
+		})
+
+		button, err := gtk.RadioButtonNew(pencilGroup)
+		if err != nil {
+			return err
+		}
+
+		button.SetMode(false)
+		button.Connect("clicked", func() {
+		})
+
+		button.Add(area)
+		button.SetVisible(true)
+		button.SetTooltipText("Circle")
+
+		addToolItem(toolbar, button, false)
+	}
+
 	pencilWidths := []float64{4, 8, 12, 16, 24}
 	buttons := make([]*gtk.RadioButton, len(pencilWidths))
 	var widthGroup *glib.SList
@@ -321,56 +359,51 @@ func initToolbar(builder *gtk.Builder) error {
 			return err
 		}
 
-		item, err := gtk.ToolItemNew()
-		if err != nil {
-			return err
-		}
-
-		item.Add(buttons[i])
-		toolbar.Add(item)
-
-		sep, err := gtk.SeparatorToolItemNew()
-		if err != nil {
-			return err
-		}
-
-		sep.SetDraw(false)
-		toolbar.Add(sep)
+		addToolItem(toolbar, buttons[i], false)
 	}
 
 	pencil.Width = pencilWidths[0]
 
-	color, err := gtk.ColorButtonNew()
-	if err != nil {
-		return err
+	{
+		// color widget
+		color, err := gtk.ColorButtonNew()
+		if err != nil {
+			return err
+		}
+
+		color.Connect("color-set", func() {
+			rgb := color.GetRGBA()
+
+			pencil.Red = rgb.GetRed()
+			pencil.Green = rgb.GetGreen()
+			pencil.Blue = rgb.GetBlue()
+
+			toolbar.QueueDraw()
+		})
+
+		addToolItem(toolbar, color, true)
 	}
 
-	color.Connect("color-set", func() {
-		rgb := color.GetRGBA()
+	return nil
+}
 
-		pencil.Red = rgb.GetRed()
-		pencil.Green = rgb.GetGreen()
-		pencil.Blue = rgb.GetBlue()
-
-		toolbar.QueueDraw()
-	})
-
+func addToolItem(toolbar *gtk.Toolbar, w gtk.IWidget, drawSep bool) (err error) {
 	item, err := gtk.ToolItemNew()
 	if err != nil {
-		return err
+		return
 	}
 
-	item.Add(color)
+	item.Add(w)
 	toolbar.Add(item)
 
 	sep, err := gtk.SeparatorToolItemNew()
 	if err != nil {
-		return err
+		return
 	}
 
+	sep.SetDraw(drawSep)
 	toolbar.Add(sep)
-
-	return nil
+	return
 }
 
 func newToolButtonWithCircle(group *glib.SList, label string, width float64) (*gtk.RadioButton, error) {

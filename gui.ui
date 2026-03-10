@@ -143,7 +143,9 @@
                     </child>
 
                     <child>
-                      <object class="GtkSeparatorToolItem"></object>
+                      <object class="GtkSeparatorToolItem">
+                        <property name="draw">FALSE</property>
+                      </object>
                     </child>
                     
                   </object>
